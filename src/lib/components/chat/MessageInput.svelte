@@ -653,6 +653,625 @@
 					fileItem.collection_name =
 						uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
 					fileItem.content_type = uploadedFile.meta?.content_type || uploadedFile.content_type;
+					fileItem.url = `${		temporaryChatEnabled
+	} from '$lib/stores';
+
+	import {
+		convertHeicToJpeg,
+		compressImage,
+		createMessagesList,
+		extractContentFromFile,
+		extractCurlyBraceWords,
+		extractInputVariables,
+		getAge,
+		getCurrentDateTime,
+		getFormattedDate,
+		getFormattedTime,
+		getUserPosition,
+		getUserTimezone,
+		getWeekday
+	} from '$lib/utils';
+	import { uploadFile } from '$lib/apis/files';
+	import { generateAutoCompletion } from '$lib/apis';
+	import { deleteFileById } from '$lib/apis/files';
+	import { getChatById } from '$lib/apis/chats';
+	import { getSessionUser } from '$lib/apis/auths';
+	import { getTools } from '$lib/apis/tools';
+
+	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
+	import { getOAuthClientAuthorizationUrl } from '$lib/apis/configs';
+
+	import { createNoteHandler } from '../notes/utils';
+	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
+
+	import InputMenu from './MessageInput/InputMenu.svelte';
+	import VoiceRecording from './MessageInput/VoiceRecording.svelte';
+
+	import ToolServersModal from './ToolServersModal.svelte';
+
+	import RichTextInput from '../common/RichTextInput.svelte';
+	import Tooltip from '../common/Tooltip.svelte';
+	import FileItem from '../common/FileItem.svelte';
+	import Image from '../common/Image.svelte';
+	import Spinner from '../common/Spinner.svelte';
+
+	import XMark from '../icons/XMark.svelte';
+	import GlobeAlt from '../icons/GlobeAlt.svelte';
+	import Photo from '../icons/Photo.svelte';
+	import Wrench from '../icons/Wrench.svelte';
+	import Sparkles from '../icons/Sparkles.svelte';
+
+	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
+	import Voice from '../icons/Voice.svelte';
+	import Terminal from '../icons/Terminal.svelte';
+	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
+	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
+	import Component from '../icons/Component.svelte';
+	import PlusAlt from '../icons/PlusAlt.svelte';
+	import Dropdown from '../common/Dropdown.svelte';
+
+	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
+	import Knobs from '../icons/Knobs.svelte';
+	import ValvesModal from '../workspace/common/ValvesModal.svelte';
+	import Note from '../icons/Note.svelte';
+	import { goto } from '$app/navigation';
+	import InputModal from '../common/InputModal.svelte';
+	import Expand from '../icons/Expand.svelte';
+	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
+	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
+
+	const i18n = getContext('i18n');
+
+	export let onUpload: Function = (e) => {};
+	export let onChange: Function = () => {};
+
+	export let createMessagePair: Function;
+	export let stopResponse: Function;
+
+	export let autoScroll = false;
+	export let generating = false;
+	export let uploadPending = false;
+
+	export let atSelectedModel: Model | undefined = undefined;
+	export let selectedModels: [''];
+
+	let selectedModelIds = [];
+	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
+
+	export let history;
+	export let taskIds = null;
+
+	$: isActive =
+		(taskIds && taskIds.length > 0) ||
+		(history.currentId && history.messages[history.currentId]?.done != true) ||
+		generating;
+
+	export let prompt = '';
+	export let files = [];
+
+	export let selectedToolIds = [];
+	export let selectedFilterIds = [];
+
+	export let imageGenerationEnabled = false;
+	export let webSearchEnabled = false;
+	export let codeInterpreterEnabled = false;
+
+	export let pendingOAuthTools = [];
+
+	let showTerminalMenu = false;
+
+	export let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+	export let onQueueSendNow: (id: string) => void = () => {};
+	export let onQueueEdit: (id: string) => void = () => {};
+	export let onQueueDelete: (id: string) => void = () => {};
+
+	export let chatTasks = [];
+
+	let inputContent = null;
+
+	let showInputVariablesModal = false;
+	let inputVariablesModalCallback = (variableValues) => {};
+	let inputVariables = {};
+	let inputVariableValues = {};
+
+	let showValvesModal = false;
+	let selectedValvesType = 'tool'; // 'tool' or 'function'
+	let selectedValvesItemId = null;
+	let integrationsMenuCloseOnOutsideClick = true;
+
+	$: if (!showValvesModal) {
+		integrationsMenuCloseOnOutsideClick = true;
+	}
+
+	$: onChange({
+		prompt,
+		files: files
+			.filter((file) => file.type !== 'image')
+			.map((file) => {
+				return {
+					...file,
+					user: undefined,
+					access_grants: undefined
+				};
+			}),
+		selectedToolIds,
+		selectedFilterIds,
+		imageGenerationEnabled,
+		webSearchEnabled,
+		codeInterpreterEnabled
+	});
+
+	const inputVariableHandler = async (text: string): Promise<string> => {
+		inputVariables = extractInputVariables(text);
+
+		// No variables? return the original text immediately.
+		if (Object.keys(inputVariables).length === 0) {
+			return text;
+		}
+
+		// Show modal and wait for the user's input.
+		showInputVariablesModal = true;
+		return await new Promise<string>((resolve) => {
+			inputVariablesModalCallback = (variableValues) => {
+				inputVariableValues = { ...inputVariableValues, ...variableValues };
+				replaceVariables(inputVariableValues);
+				showInputVariablesModal = false;
+				resolve(text);
+			};
+		});
+	};
+
+	const textVariableHandler = async (text: string) => {
+		if (text.includes('{{CLIPBOARD}}')) {
+			const clipboardText = await navigator.clipboard.readText().catch((err) => {
+				toast.error($i18n.t('Failed to read clipboard contents'));
+				return '{{CLIPBOARD}}';
+			});
+
+			const clipboardItems = await navigator.clipboard.read().catch((err) => {
+				console.error('Failed to read clipboard items:', err);
+				return [];
+			});
+
+			for (const item of clipboardItems) {
+				for (const type of item.types) {
+					if (type.startsWith('image/')) {
+						const blob = await item.getType(type);
+						const file = new File([blob], `clipboard-image.${type.split('/')[1]}`, {
+							type: type
+						});
+
+						inputFilesHandler([file]);
+					}
+				}
+			}
+
+			text = text.replaceAll('{{CLIPBOARD}}', clipboardText.replaceAll('\r\n', '\n'));
+		}
+
+		if (text.includes('{{USER_LOCATION}}')) {
+			let location;
+			try {
+				location = await getUserPosition();
+			} catch (error) {
+				toast.error($i18n.t('Location access not allowed'));
+				location = 'LOCATION_UNKNOWN';
+			}
+			text = text.replaceAll('{{USER_LOCATION}}', String(location));
+		}
+
+		const sessionUser = await getSessionUser(localStorage.token);
+
+		if (text.includes('{{USER_NAME}}')) {
+			const name = sessionUser?.name || 'User';
+			text = text.replaceAll('{{USER_NAME}}', name);
+		}
+
+		if (text.includes('{{USER_EMAIL}}')) {
+			const email = sessionUser?.email || '';
+
+			if (email) {
+				text = text.replaceAll('{{USER_EMAIL}}', email);
+			}
+		}
+
+		if (text.includes('{{USER_BIO}}')) {
+			const bio = sessionUser?.bio || '';
+
+			if (bio) {
+				text = text.replaceAll('{{USER_BIO}}', bio);
+			}
+		}
+
+		if (text.includes('{{USER_GENDER}}')) {
+			const gender = sessionUser?.gender || '';
+
+			if (gender) {
+				text = text.replaceAll('{{USER_GENDER}}', gender);
+			}
+		}
+
+		if (text.includes('{{USER_BIRTH_DATE}}')) {
+			const birthDate = sessionUser?.date_of_birth || '';
+
+			if (birthDate) {
+				text = text.replaceAll('{{USER_BIRTH_DATE}}', birthDate);
+			}
+		}
+
+		if (text.includes('{{USER_AGE}}')) {
+			const birthDate = sessionUser?.date_of_birth || '';
+
+			if (birthDate) {
+				// calculate age using date
+				const age = getAge(birthDate);
+				text = text.replaceAll('{{USER_AGE}}', age);
+			}
+		}
+
+		if (text.includes('{{USER_LANGUAGE}}')) {
+			const language = localStorage.getItem('locale') || 'en-US';
+			text = text.replaceAll('{{USER_LANGUAGE}}', language);
+		}
+
+		if (text.includes('{{CURRENT_DATE}}')) {
+			const date = getFormattedDate();
+			text = text.replaceAll('{{CURRENT_DATE}}', date);
+		}
+
+		if (text.includes('{{CURRENT_TIME}}')) {
+			const time = getFormattedTime();
+			text = text.replaceAll('{{CURRENT_TIME}}', time);
+		}
+
+		if (text.includes('{{CURRENT_DATETIME}}')) {
+			const dateTime = getCurrentDateTime();
+			text = text.replaceAll('{{CURRENT_DATETIME}}', dateTime);
+		}
+
+		if (text.includes('{{CURRENT_TIMEZONE}}')) {
+			const timezone = getUserTimezone();
+			text = text.replaceAll('{{CURRENT_TIMEZONE}}', timezone);
+		}
+
+		if (text.includes('{{CURRENT_WEEKDAY}}')) {
+			const weekday = getWeekday();
+			text = text.replaceAll('{{CURRENT_WEEKDAY}}', weekday);
+		}
+
+		return text;
+	};
+
+	const replaceVariables = (variables: Record<string, any>) => {
+		console.log('Replacing variables:', variables);
+
+		const chatInput = document.getElementById('chat-input');
+
+		if (chatInput) {
+			chatInputElement.replaceVariables(variables);
+			chatInputElement.focus();
+		}
+	};
+
+	export const setText = async (text?: string, cb?: (text: string) => void) => {
+		const chatInput = document.getElementById('chat-input');
+
+		if (chatInput) {
+			if (text !== '') {
+				text = await textVariableHandler(text || '');
+			}
+
+			chatInputElement?.setText(text);
+			if (!$showCallOverlay) {
+				chatInputElement?.focus();
+			}
+
+			if (text !== '') {
+				text = await inputVariableHandler(text);
+			}
+
+			await tick();
+			if (cb) await cb(text);
+		}
+	};
+
+	const getCommand = () => {
+		const chatInput = document.getElementById('chat-input');
+		let word = '';
+
+		if (chatInput) {
+			word = chatInputElement?.getWordAtDocPos();
+		}
+
+		return word;
+	};
+
+	const replaceCommandWithText = (text) => {
+		const chatInput = document.getElementById('chat-input');
+		if (!chatInput) return;
+
+		chatInputElement?.replaceCommandWithText(text);
+	};
+
+	const insertTextAtCursor = async (text: string) => {
+		const chatInput = document.getElementById('chat-input');
+		if (!chatInput) return;
+
+		text = await textVariableHandler(text);
+
+		if (command) {
+			replaceCommandWithText(text);
+		} else {
+			chatInputElement?.insertContent(text);
+		}
+
+		await tick();
+		text = await inputVariableHandler(text);
+		await tick();
+
+		const chatInputContainer = document.getElementById('chat-input-container');
+		if (chatInputContainer) {
+			chatInputContainer.scrollTop = chatInputContainer.scrollHeight;
+		}
+
+		await tick();
+		if (chatInput) {
+			chatInput.focus();
+			chatInput.dispatchEvent(new Event('input'));
+
+			const words = extractCurlyBraceWords(prompt);
+
+			if (words.length > 0) {
+				const word = words.at(0);
+				await tick();
+			} else {
+				chatInput.scrollTop = chatInput.scrollHeight;
+			}
+		}
+	};
+
+	let command = '';
+	export let showCommands = false;
+	$: showCommands =
+		['/', '#', '@', '$', ':'].includes(command?.charAt(0)) || '\\#' === command?.slice(0, 2);
+	let suggestions = null;
+
+	let showTools = false;
+
+	let loaded = false;
+	let recording = false;
+
+	let isComposing = false;
+	// Safari has a bug where compositionend is not triggered correctly #16615
+	// when using the virtual keyboard on iOS.
+	let compositionEndedAt = -2e8;
+	const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+	function inOrNearComposition(event: Event) {
+		if (isComposing) {
+			return true;
+		}
+		// See https://www.stum.de/2016/06/24/handling-ime-events-in-javascript/.
+		// On Japanese input method editors (IMEs), the Enter key is used to confirm character
+		// selection. On Safari, when Enter is pressed, compositionend and keydown events are
+		// emitted. The keydown event triggers newline insertion, which we don't want.
+		// This method returns true if the keydown event should be ignored.
+		// We only ignore it once, as pressing Enter a second time *should* insert a newline.
+		// Furthermore, the keydown event timestamp must be close to the compositionEndedAt timestamp.
+		// This guards against the case where compositionend is triggered without the keyboard
+		// (e.g. character confirmation may be done with the mouse), and keydown is triggered
+		// afterwards- we wouldn't want to ignore the keydown event in this case.
+		if (isSafari && Math.abs(event.timeStamp - compositionEndedAt) < 500) {
+			compositionEndedAt = -2e8;
+			return true;
+		}
+		return false;
+	}
+
+	let chatInputContainerElement;
+	let chatInputElement;
+
+	let filesInputElement;
+	let commandsElement;
+
+	let inputFiles;
+
+	let showInputModal = false;
+
+	export let dragged = false;
+	let shiftKey = false;
+
+	let user = null;
+	export let placeholder = '';
+
+	let visionCapableModels = [];
+	$: visionCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
+		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.vision ?? true
+	);
+
+	let fileUploadCapableModels = [];
+	$: fileUploadCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
+		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.file_upload ?? true
+	);
+
+	let webSearchCapableModels = [];
+	$: webSearchCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
+		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
+	);
+
+	let imageGenerationCapableModels = [];
+	$: imageGenerationCapableModels = (
+		atSelectedModel?.id ? [atSelectedModel.id] : selectedModels
+	).filter(
+		(model) =>
+			$models.find((m) => m.id === model)?.info?.meta?.capabilities?.image_generation ?? true
+	);
+
+	let codeInterpreterCapableModels = [];
+	$: codeInterpreterCapableModels = (
+		atSelectedModel?.id ? [atSelectedModel.id] : selectedModels
+	).filter(
+		(model) =>
+			$models.find((m) => m.id === model)?.info?.meta?.capabilities?.code_interpreter ?? true
+	);
+
+	let terminalCapableModels = [];
+	$: terminalCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
+		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.terminal ?? true
+	);
+
+	let toggleFilters = [];
+	$: toggleFilters = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels)
+		.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
+		.reduce((acc, filters) => acc.filter((f1) => filters.some((f2) => f2.id === f1.id)));
+
+	let showToolsButton = false;
+	$: showToolsButton = ($tools ?? []).length > 0 || ($toolServers ?? []).length > 0;
+
+	let showWebSearchButton = false;
+	$: showWebSearchButton =
+		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).length ===
+			webSearchCapableModels.length &&
+		$config?.features?.enable_web_search &&
+		($_user.role === 'admin' || $_user?.permissions?.features?.web_search);
+
+	let showImageGenerationButton = false;
+	$: showImageGenerationButton =
+		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).length ===
+			imageGenerationCapableModels.length &&
+		$config?.features?.enable_image_generation &&
+		($_user.role === 'admin' || $_user?.permissions?.features?.image_generation);
+
+	let showCodeInterpreterButton = false;
+	$: showCodeInterpreterButton =
+		!$selectedTerminalId &&
+		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).length ===
+			codeInterpreterCapableModels.length &&
+		$config?.features?.enable_code_interpreter &&
+		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
+
+	// Disable code interpreter when terminal is active (mutually exclusive)
+	$: if ($selectedTerminalId && codeInterpreterEnabled) {
+		codeInterpreterEnabled = false;
+	}
+
+	// Clear selected terminal when model doesn't support terminal
+	$: if ($selectedTerminalId && terminalCapableModels.length === 0) {
+		selectedTerminalId.set(null);
+	}
+
+	const scrollToBottom = () => {
+		const element = document.getElementById('messages-container');
+		element.scrollTo({
+			top: element.scrollHeight,
+			behavior: 'smooth'
+		});
+	};
+
+	const screenCaptureHandler = async () => {
+		try {
+			// Request screen media
+			const mediaStream = await navigator.mediaDevices.getDisplayMedia({
+				video: { cursor: 'never' },
+				audio: false
+			});
+			// Once the user selects a screen, temporarily create a video element
+			const video = document.createElement('video');
+			video.srcObject = mediaStream;
+			// Ensure the video loads without affecting user experience or tab switching
+			await video.play();
+			// Set up the canvas to match the video dimensions
+			const canvas = document.createElement('canvas');
+			canvas.width = video.videoWidth;
+			canvas.height = video.videoHeight;
+			// Grab a single frame from the video stream using the canvas
+			const context = canvas.getContext('2d');
+			context.drawImage(video, 0, 0, canvas.width, canvas.height);
+			// Stop all video tracks (stop screen sharing) after capturing the image
+			mediaStream.getTracks().forEach((track) => track.stop());
+
+			// bring back focus to this current tab, so that the user can see the screen capture
+			window.focus();
+
+			// Convert the canvas to a Base64 image URL
+			const imageUrl = canvas.toDataURL('image/png');
+			const blob = await (await fetch(imageUrl)).blob();
+			const file = new File([blob], `screen-capture-${Date.now()}.png`, { type: 'image/png' });
+			inputFilesHandler([file]);
+			// Clean memory: Clear video srcObject
+			video.srcObject = null;
+		} catch (error) {
+			// Handle any errors (e.g., user cancels screen sharing)
+			console.error('Error capturing screen:', error);
+		}
+	};
+
+	const uploadFileHandler = async (file, process = true, itemData = {}) => {
+		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
+			toast.error($i18n.t('You do not have permission to upload files.'));
+			return null;
+		}
+
+		if (fileUploadCapableModels.length !== selectedModels.length) {
+			toast.error($i18n.t('Model(s) do not support file upload'));
+			return null;
+		}
+
+		const tempItemId = uuidv4();
+		const fileItem = {
+			type: 'file',
+			file: '',
+			id: null,
+			url: '',
+			name: file.name,
+			collection_name: '',
+			status: 'uploading',
+			size: file.size,
+			error: '',
+			itemId: tempItemId,
+			...itemData
+		};
+
+		if (fileItem.size == 0) {
+			toast.error($i18n.t('You cannot upload an empty file.'));
+			return null;
+		}
+
+		files = [...files, fileItem];
+
+		if (!$temporaryChatEnabled) {
+			try {
+				// If the file is an audio file, provide the language for STT.
+				let metadata = null;
+				if (
+					(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
+					$settings?.audio?.stt?.language
+				) {
+					metadata = {
+						language: $settings?.audio?.stt?.language
+					};
+				}
+
+				// During the file upload, file content is automatically extracted.
+				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
+
+				if (uploadedFile) {
+					console.log('File upload completed:', {
+						id: uploadedFile.id,
+						name: fileItem.name,
+						collection: uploadedFile?.meta?.collection_name
+					});
+
+					if (uploadedFile.error) {
+						console.warn('File upload warning:', uploadedFile.error);
+						toast.warning(uploadedFile.error);
+					}
+
+					fileItem.status = 'uploaded';
+					fileItem.file = uploadedFile;
+					fileItem.id = uploadedFile.id;
+					fileItem.collection_name =
+						uploadedFile?.meta?.collection_name || uploadedFile?.collection_name;
+					fileItem.content_type = uploadedFile.meta?.content_type || uploadedFile.content_type;
 					fileItem.url = `${<script lang="ts">
 	import DOMPurify from 'dompurify';
 	import { toast } from 'svelte-sonner';
